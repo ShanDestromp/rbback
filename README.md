@@ -10,7 +10,7 @@ The only package that probably isn't installed by default (besides restic itself
 
 ## Installation / Useage
 
-Clone the repo / download the `rbback.sh` and `restic_excludes.txt` files wherever you like, make the script executable `chmod +x rbback.sh`, edit the script variables to suite your system and go.  As your repository password is stored in the script (to allow unattended usage such as through cron) you should ensure only the owner can read the file (`chmod 700`). Uninstallation is as simple as deleting the script and excludes file.
+Clone the repo / download the `rbback.sh` and `restic_excludes.txt` files wherever you like, make the script executable `chmod +x rbback.sh`, edit the script variables to suite your system and go.  As your repository password is stored in the script (to allow unattended usage such as through cron) you should ensure only the owner can read the file (`chmod 700`), or at least store it in a directory where only the user can read. Uninstallation is as simple as deleting the script and excludes file.
 
 All configuration is at the top of the file and should be fairly self-explanatory.  Set your restic password (either for an existing repo, or to be used creating new ones).
 Configure the WoL, SSH and paths; your snapshot retention policy, the locations you want to create repositories for.  File/directory exclusions are handled by the excludes file.
