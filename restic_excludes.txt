@@ -1,0 +1,11 @@
+# Excludes files with names matching:
+*.part
+*.tmp
+*.bak
+*.ori
+.cache
+
+# Excludes contents of folders matching:
+tmp/*
+mnt/*
+cache/*
