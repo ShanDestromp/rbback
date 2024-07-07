@@ -1,3 +1,7 @@
+# Example excludes file
+# Read restic docs on this VERY carefully to prevent missing files
+# https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files
+
 # Excludes files with names matching:
 *.part
 *.tmp
