@@ -9,10 +9,11 @@
 #####       (its "better" than my last attempt) ##################
 ##################################################################
 
-VER=0.1.0
+VER=0.2.0
+SECONDS=0
 
 # Better backup script using restic
-# Requires:  restic, wakeonlan, nc
+# Requires:  restic, wakeonlan, nc, jq, numfmt
 # ASSUMES you have pubkey for ssh access otherwise automated actions will likely fail
 
 
@@ -55,7 +56,7 @@ BACLOC=( "/nexus/cloud"
 
 # List of things to exclude from backups
 # see https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files
-EXCL="/opt/common/restic_excludes.txt"
+EXCL="/opt/restic/config/restic_excludes.txt"
 
 # Additional *GLOBAL* options to restic to include in commands
 # Multiple "verbose" lines increase output (upto 3x)
@@ -94,20 +95,34 @@ function f_special {
 #### Below Here be demons, Edit at your own Risk ####
 #####################################################
 
+# Options for numerical conversion used in f_stats
+NUMOPT=("--to=iec-i"
+	"--suffix=B"
+	"--format=\"%.3f\""
+)
+
 RES=$(which restic)
 
-MODE="$(echo "$1" | tr '[:upper:]' '[:lower:]')" #mode in lowercase for ease
+MODE="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
 OPT="$(echo "$2" | tr '[:upper:]' '[:lower:]' | sed 's:/*$::')"
+
+# Calculates script runtime
+function f_elapsed {
+	ELAPSED="Elapsed Runtime: $(($SECONDS / 3600))hrs $((($SECONDS / 60) % 60))min $(($SECONDS % 60))sec"
+	echo $ELAPSED
+}
 
 # Self Updater
 function f_update {
-		$RES self-update
+	$RES self-update
+	f_elapsed	
 	exit 0
 }
 
 # Host check
+# Pings the host and sleeps 10 seconds 60 times until it wakes up
 function f_hostcheck {
-	echo "Checking $HOSTNAME status"
+	if [ "$MODE" = "cron" ]; then echo "Checking $HOSTNAME status"; fi
 
 	j=0
 	while ! nc -n -z -w 1 $HOST $PORT; do
@@ -128,13 +143,13 @@ function f_wakeup {
 	WOL=$(which wakeonlan)
 
 	echo $FIL
-	echo "#### Wake $HOSTNAME                                                  ####"
+	echo "#### Wake $HOSTNAME                                                ####"
 	echo -e $FIL "\n"
 	$WOL -i $Broadcast $MAC
 	echo -e "\n"
 
 	echo $FIL
-	echo "#### Sleeping until $HOSTNAME awakens                                  ####"
+	echo "#### Sleeping until $HOSTNAME awakens                              ####"
 	echo -e $FIL "\n"
 
 	f_hostcheck
@@ -142,7 +157,7 @@ function f_wakeup {
 }
 
 # list repositories
-function f_list {
+function f_listrepo {
 	for LOC in "${BACLOC[@]}"; do
 		echo "$LOC"
 	done
@@ -186,7 +201,12 @@ function f_init {
 			echo -e $FIL "\n"
 		fi
 	done
-	if [ "$MODE" != "cron" ]; then exit 0; fi
+
+	if [ "$MODE" != "cron" ]
+	then 
+		f_elapsed
+		exit 0
+	fi
 }
 
 # snapshot action
@@ -204,7 +224,7 @@ function f_backup {
 
 	if [ "$OPT" = "list" ]
 	then
-		f_list
+		f_listrepo
 	elif [ -d "$OPT" ]
 	then
 		f_repository
@@ -216,7 +236,11 @@ function f_backup {
 			f_snapshot
 		done
 	fi
-	if [ "$MODE" != "cron" ]; then exit 0; fi
+	if [ "$MODE" != "cron" ]
+	then 
+		f_elapsed
+		exit 0
+	fi
 }
 
 # prune action
@@ -226,11 +250,12 @@ function f_prune {
 	echo "#### Pruning $OPT                                          ####"
 	echo -e $FIL "\n"
 
-	$RES "$ROPTS" forget "$KEEP" --prune
+	# Sets for removal
+	$RES $ROPTS forget $KEEP --prune
 	# Checks for unreferenced data
-	$RES "$ROPTS" check
+	$RES $ROPTS check
 	# Prunes above
-	$RES "$ROPTS" prune
+	$RES $ROPTS prune
 }
 
 # clean sequence
@@ -239,7 +264,7 @@ function f_cleanup {
 
 	if [ "$OPT" = "list" ]
 	then
-		f_list
+		f_listrepo
 	elif [ -d "$OPT" ]
 	then
 		f_repository
@@ -251,30 +276,128 @@ function f_cleanup {
 			f_prune
 		done
 	fi
-	if [ "$MODE" != "cron" ]; then exit 0; fi
+	if [ "$MODE" != "cron" ]
+	then 
+		f_elapsed
+		exit 0
+	fi
 }
 
-# repository statistics
-function f_stats {
+# get repo statistics
+function f_getstats {
+	IFS=$'\n'
+	readarray -t LAST < <( $RES stats latest --json | jq ) # Latest snapshot expanded
+	readarray -t GENERAL < <( $RES stats --json | jq ) # All snapshots expanded no dedup
+	readarray -t RAW < <( $RES stats --mode raw-data --json | jq ) # includes compression stats
+	
+	STATS=( "${LAST[*]}" "${GENERAL[*]}" "${RAW[*]}" )
+	
+	SIZE=()
+	declare -A REPSTAT
+	for i in "${STATS[@]}"; do
+		t=$(echo "$i" | jq .total_size)
+		SIZE+=("$t")
+		REPSTAT[COMP]=$(echo "$i" | jq .compression_space_saving)
+		REPSTAT[RATIO]=$(echo "$i" | jq .compression_ratio)
+	done
 
+	REPSTAT[LATEST]=${SIZE[0]}
+	REPSTAT[GENERAL]=${SIZE[1]}
+	REPSTAT[RAW]=${SIZE[2]}
+	
+	NUMFMT=$(which numfmt)
+	
+	NOPTS=""
+	for i in "${NUMOPT[@]}"; do
+		NOPTS="$NOPTS $i"
+	done
+	
+	echo $FIL
+	echo "#    LATEST    |    TOTAL     |    RAW     |  COMPRESSION  |   COMP    #"
+	echo "#   SNAPSHOT   |  (no dedup)  |            |       %       |   RATIO   #"
+	echo $FIL
+	
+	echo -n "#    "
+	printf %s "${REPSTAT[LATEST]}" | $NUMFMT "$NUMOPT"
+	echo -n "     |    "
+	printf %s "${REPSTAT[GENERAL]}" | $NUMFMT "$NUMOPT"
+	echo -n "     |    "
+	printf %s "${REPSTAT[RAW]}" | $NUMFMT "$NUMOPT"
+	echo -n "   |      "
+	printf "%.3f%%" "${REPSTAT[COMP]}" 
+	echo -n "   |   "
+	printf "%.3fx" "${REPSTAT[RATIO]}"
+	echo "  #"
 	echo $FIL
 
-	for LOC in "${BACLOC[@]}"; do
-		OPT=$LOC
+}
+
+# statistics sequence
+function f_stats {
+	if [ "$OPT" = "list" ]
+	then
+		f_listrepo
+	elif [ -d "$OPT" ]
+	then
 		f_repository
-		echo "#### $LOC Statistics                                        ####"
-		$RES stats latest
-		echo ""
-	done
-	echo -e $FIL "\n"
-	if [ "$MODE" != "cron" ]; then exit 0; fi
+		f_getstats
+	else
+		echo $FIL
+
+		for LOC in "${BACLOC[@]}"; do
+			OPT=$LOC
+			f_repository
+			echo "#### $LOC Statistics                                        ####"
+			f_getstats
+			echo ""
+		done
+		echo -e $FIL "\n"
+	fi
+
+	if [ "$MODE" != "cron" ]
+	then 
+		f_elapsed
+		exit 0
+	fi
+}
+
+# list repository snapshots
+function f_listsnaps {
+
+	f_ropts
+
+	if [ "$OPT" = "list" ]
+	then
+		f_listrepo
+	elif [ -d "$OPT" ]
+	then
+		f_repository
+		$RES snapshots
+	else
+
+		echo $FIL
+
+		for LOC in "${BACLOC[@]}"; do
+			OPT=$LOC
+			f_repository
+			echo "#### $LOC Snapshots                                        ####"
+			$RES snapshots
+			echo ""
+		done
+		echo -e $FIL "\n"
+	fi
+	if [ "$MODE" != "cron" ]
+	then 
+		f_elapsed
+		exit 0
+	fi
 }
 
 # mount repo
 function f_mount {
 	if [ "$OPT" = "list" ] || [ -z "$OPT" ]
 	then
-		f_list
+		f_listrepo
 	else
 
 		f_repository
@@ -289,6 +412,7 @@ function f_mount {
 			$RES mount $MLOC 2>&1 > /dev/null &
 			sleep 2
 			echo "When unmounting, it is safe to ignore the \"unable to umount\" error"
+			f_elapsed
 			exit 0
 		else
 			echo "Unwriteable location"
@@ -309,8 +433,7 @@ function f_help {
 	echo "$0 version $VER"
 	echo ""
 
-	echo "Useage:"
-	echo "$0 [command] [options]"
+	echo "Useage:  $0 [command] [options]"
 	echo ""
 
 	echo "Commands:"
@@ -324,11 +447,16 @@ function f_help {
 	printf "\nwakeup\n\t\t Manually wakeup %s %s then exit" "$HOSTNAME" "$HOST"
 	printf "\n\t\t\t no options"
 
-	printf "\nlist\n\t\t Lists all available repositories."
-	printf "\n\t\t\t no options"
-
 	printf "\ninit\n\t\t Initalizes all configured repositories."
 	printf "\n\t\t\t no options"
+
+	printf "\nlistrepo\n\t\t Lists all available repositories."
+	printf "\n\t\t\t no options"
+	
+	printf "\nlistsnaps [options]\n\t\t Lists all available repositories."
+	printf "\n\t\t\t [none] :  List snapshots on all stored repositories."
+	printf "\n\t\t\t list : Lists all available repositories."
+	printf "\n\t\t\t [repository] : Only executes on selected repository."
 
 	printf "\nbackup [options]\n\t\t executes a repository backup"
 	printf "\n\t\t\t [none] :  Executes a complete backup of all stored repositories."
@@ -336,7 +464,12 @@ function f_help {
 	printf "\n\t\t\t [repository] : Only executes on selected repository."
 
 	printf "\ncleanup [options]\n\t\t executes a repository cleanup"
-	printf "\n\t\t\t [none] :  Executes a complete cleanup of all stored repositories."
+	printf "\n\t\t\t [none] :  Executes a complete forget check and prune sequence of all repositories."
+	printf "\n\t\t\t list : Lists all available repositories."
+	printf "\n\t\t\t [repository] : Only executes on selected repository."
+
+	printf "\nstats [options]\n\t\t Prints repository statistics."
+	printf "\n\t\t\t [none] :  Lists size statistics of all repositories."
 	printf "\n\t\t\t list : Lists all available repositories."
 	printf "\n\t\t\t [repository] : Only executes on selected repository."
 
@@ -345,9 +478,6 @@ function f_help {
 	printf "\n\t\t\t [repository] : mounts selected repository."
 
 	printf "\numount\n\t\t unmounts a repository to the local fs for browsing"
-	printf "\n\t\t\t no options"
-
-	printf "\nstats\n\t\t Prints repository statistics."
 	printf "\n\t\t\t no options"
 
 	printf "\ncron\n\t\t Special operations mode specific for cron usage.  Runs in sequence "
@@ -361,56 +491,51 @@ function f_help {
 # Never a third option, send them to help
 if [ -n "$3" ]; then MODE="help"; fi
 
-
 case $MODE in
-
 	update)
 		f_update
 	;;
-
 	wakeup)
 		f_wakeup
 	;;
-
-	list)
-		f_list
+	listrepo)
+		f_listrepo
 	;;
-
+	listsnaps)
+		f_listsnaps
+	;;
 	backup)
 		f_hostcheck
 		f_backup
 	;;
-
 	cleanup)
 		f_hostcheck
 		f_cleanup
 	;;
-
 	mount)
 		f_hostcheck
 		f_mount
 	;;
-
 	umount)
 		f_unmount
 	;;
-
 	stats)
 		f_hostcheck
 		f_stats
 	;;
-
 	cron)
 		f_wakeup
 		f_init
+		OPT="$(echo "$2" | tr '[:upper:]' '[:lower:]' | sed 's:/*$::')"
 		f_backup
+		OPT="$(echo "$2" | tr '[:upper:]' '[:lower:]' | sed 's:/*$::')"
 		f_cleanup
+		OPT="$(echo "$2" | tr '[:upper:]' '[:lower:]' | sed 's:/*$::')"
 		f_stats
 		f_special
+		f_elapsed
 	;;
-
 	help|*)
 		f_help
 	;;
-
 esac
