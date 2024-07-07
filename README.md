@@ -18,6 +18,12 @@ Edit the special actions function (`f_special`) to suit your needs as the final 
 If you don't want anything, then simply comment the function activation at the **END** of the script.  Similarly if your backup location is always on feel free to comment out `f_wakeup` at the end as well.
 Actual script usage can be seen by calling `rbback.sh help`.  
 
+## LIMITATIONS
+
+This script is designed based off of my usage and might not match your ideas.  For instance I *only* backup to a remote machine via sftp so there is (at the moment) no built in way to handle other repo types (eg local, b2, google cloud).  This **might** be something easily added in the future but I haven't yet looked into it.
+
+Additionally, things like snapshot retention is set globally; so you can't have one repository keeping more snapshots than another.  Again, I might look at making this more granular but would likely come after other changes.
+
 ### Blended usage
 
 This script doesn't do anything you couldn't do directly with restic and can work with existing repos as well as new ones.  Use this script to automate repetitive tasks while use restic directly for other ones, or however you like.
@@ -31,3 +37,5 @@ Setup a mail system for cron so you can get the output of your backups as the sc
 * Function to pass commands directly to restic, not just pre-scripted actions
 * Possibly move user-configurable options to a config file instead of a monolithic script
 * look into if using a password_file is safer than storing it in the script
+* Other repository types
+* snapshot retention granularity
